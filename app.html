@@ -103,21 +103,29 @@ function borrarTienda(id){tiendasGuardadas=tiendasGuardadas.filter(t=>t.id!==id)
 function limpiarDuplicadas(){const seen=new Set();tiendasGuardadas=tiendasGuardadas.filter(t=>{const k=t.nombre.toLowerCase()+'|'+t.nicho;if(seen.has(k))return false;seen.add(k);return true;});localStorage.setItem('misTiendasReal',JSON.stringify(tiendasGuardadas));renderMisTiendas();}
 function cargarTiendaGuardada(id){const t=tiendasGuardadas.find(x=>x.id==id);if(!t)return;mostrarTiendaFinal({nombre:t.nombre,nicho:t.nicho,color:t.color,slogan:t.slogan},t.prods);}
 function generarNombre(nicho,n){let nombre=(n||'').split('(')[0].replace(/"/g,'').replace(/\*\*/g,'').replace(/[^a-zA-Z0-9 &]/g,'').trim();if(!nombre||nombre.length<3)nombre='Aura House';return nombre.split(' ').slice(0,2).join(' ');}
-
-// FIX DEFINITIVO - CON PROXY QUE SI FUNCIONA EN RENDER
-async function fetchReal(url){
-  // Intento 1: directo
-  try{ let r=await fetch(url); if(r.ok) return await r.json(); }catch(e){}
-  // Intento 2: via allorigins (funciona en Render)
-  try{ let r=await fetch('https://api.allorigins.win/raw?url='+encodeURIComponent(url)); if(r.ok) return await r.json(); }catch(e){}
-  // Intento 3: via corsproxy
-  try{ let r=await fetch('https://corsproxy.io/?'+encodeURIComponent(url)); if(r.ok) return await r.json(); }catch(e){}
-  return null;
+async function fetchConProxy(url){
+  try{
+    if(url.includes('/search')){
+      const q = new URL(url).searchParams.get('q');
+      const site = url.match(/sites\/(.*?)\//)?.[1] || 'MLV';
+      const r = await fetch(`/api/buscar?q=${encodeURIComponent(q)}&site=${site}`);
+      if(!r.ok) throw new Error('bad status');
+      const data = await r.json();
+      return data;
+    }
+    if(url.includes('/items/')){
+      const id = url.split('/items/')[1].split('?')[0];
+      const r = await fetch(`/api/item/${id}`);
+      if(!r.ok) return null;
+      return await r.json();
+    }
+  }catch(e){ console.log('proxy error', e); return {results:[]}; }
+  return {results:[]};
 }
 async function buscarReales(){
   const raw=document.getElementById('nicho').value.trim().toLowerCase(); if(raw.length<2)return;
   cerrarSug(); guardarHist(raw);
-  document.getElementById('resultado').innerHTML=`<div style="text-align:center;padding:40px;background:white;border-radius:20px;border:1px solid #eee">🌎 Buscando <b>${raw}</b> real en MercadoLibre...</div>`;
+  document.getElementById('resultado').innerHTML=`<div style="text-align:center;padding:40px;background:white;border-radius:20px;border:1px solid #eee">Buscando <b>${raw}</b>...</div>`;
   seleccionados=[];
   if(modo==='manual'){
     marcaActual={nombre:document.getElementById('m_nombre').value||generarNombre(raw,''), slogan:document.getElementById('m_slogan').value||`Selección de ${raw}`, color:document.getElementById('m_color').value||'#7c3aed', nicho:raw};
@@ -130,18 +138,27 @@ async function buscarReales(){
     }catch(e){ marcaActual={nombre:generarNombre(raw,''), slogan:`Selección de ${raw}`, color:'#7c3aed', nicho:raw}; }
   }
   let todos=[];
-  for(let site of ['MLV','MLA','MLM','MCO','MLB']){
-    const apiUrl=`https://api.mercadolibre.com/sites/${site}/search?q=${encodeURIComponent(raw)}&limit=20`;
-    const data=await fetchReal(apiUrl);
+  try{
+    const apiUrl=`https://api.mercadolibre.com/sites/MLV/search?q=${encodeURIComponent(raw)}&limit=24`;
+    const data=await fetchConProxy(apiUrl);
     if(data?.results?.length){
       data.results.forEach(p=>{
         todos.push({id:p.id, title:p.title, price:p.price, currency:p.currency_id, vendidos:p.sold_quantity||0, thumbnail:(p.thumbnail||'').replace('http://','https://')});
       });
-      if(todos.length>=20) break;
     }
-  }
+    if(todos.length<8){
+      const apiUrl2=`https://api.mercadolibre.com/sites/MLA/search?q=${encodeURIComponent(raw)}&limit=24`;
+      const data2=await fetchConProxy(apiUrl2);
+      if(data2?.results?.length){
+        data2.results.forEach(p=>{
+          todos.push({id:p.id, title:p.title, price:p.price, currency:p.currency_id, vendidos:p.sold_quantity||0, thumbnail:(p.thumbnail||'').replace('http://','https://')});
+        });
+      }
+    }
+  }catch(e){ console.log(e); }
+
   if(todos.length===0){
-    document.getElementById('resultado').innerHTML=`<div style="text-align:center;padding:30px;background:white;border-radius:16px;border:1px solid #eee">No se encontraron resultados para "${raw}" - el servidor de MercadoLibre tardó. <br><button onclick="buscarReales()" style="background:#111;color:white;border:none;padding:10px 20px;border-radius:8px;margin-top:10px;cursor:pointer">Reintentar</button></div>`;
+    document.getElementById('resultado').innerHTML=`<div style="text-align:center;padding:30px;background:white;border-radius:16px;border:1px solid #eee">No se encontraron resultados para "${raw}".<br>Intenta con otra palabra.<br><br><button onclick="buscarReales()" style="background:#111;color:white;border:none;padding:10px 20px;border-radius:8px;cursor:pointer">Reintentar</button></div>`;
     return;
   }
   todos.sort((a,b)=>b.vendidos-a.vendidos);
@@ -153,7 +170,7 @@ async function buscarReales(){
 function render(){
   document.getElementById('resultado').innerHTML=`
     <div style="background:white;border-radius:20px;padding:24px;border:1px solid #eee">
-      <span style="background:#f3f0ff;color:#7c3aed;padding:6px 12px;border-radius:20px;font-size:12px;font-weight:600">${productosReales.length} productos reales encontrados</span>
+      <span style="background:#f3f0ff;color:#7c3aed;padding:6px 12px;border-radius:20px;font-size:12px;font-weight:600">${productosReales.length} productos encontrados</span>
       <h2 style="margin:14px 0 4px;font-size:28px">${marcaActual.nombre}</h2>
       <p style="color:#666;margin:0 0 14px">${marcaActual.slogan}</p>
       <div class="gridReal">
@@ -173,17 +190,17 @@ function addToCart(idx){carrito.push(tiendaActualProds[idx]); document.getElemen
 async function abrirDetalle(itemId){
   const p=tiendaActualProds.find(x=>x.id===itemId);
   const modal=document.getElementById('prodModal'); modal.style.display='flex';
-  modal.innerHTML=`<div style="background:white;border-radius:20px;max-width:900px;width:100%;padding:20px;text-align:center">Cargando fotos reales de ${itemId}...</div>`;
-  const data=await fetchReal(`https://api.mercadolibre.com/items/${itemId}`);
+  modal.innerHTML=`<div style="background:white;border-radius:20px;max-width:900px;width:100%;padding:20px;text-align:center">Cargando...</div>`;
+  const data=await fetchConProxy(`https://api.mercadolibre.com/items/${itemId}`);
   if(!data ||!data.title){
     modal.innerHTML=`<div style="background:white;padding:20px;border-radius:20px;max-width:600px;width:100%"><h3>${p.title}</h3><img src="${p.thumbnail}" style="width:100%;height:300px;object-fit:contain"><p>${p.vendidos} vendidos</p><button onclick="cerrarModal()" style="background:#111;color:white;border:none;padding:10px 20px;border-radius:8px">Cerrar</button></div>`;
     return;
   }
   const pics=data.pictures||[{url:p.thumbnail}];
-  modal.innerHTML=`<div style="background:white;border-radius:20px;max-width:1000px;width:100%;max-height:92vh;overflow:auto;display:grid;grid-template-columns:1fr 1fr"><div style="padding:16px;background:#fafafa"><img id="mainImg" src="${pics[0].url||pics[0].secure_url}" style="width:100%;height:400px;object-fit:contain;background:white;border-radius:12px" referrerpolicy="no-referrer"><div style="display:flex;gap:8px;margin-top:10px;overflow-x:auto">${pics.slice(0,8).map(pic=>`<img src="${pic.url||pic.secure_url}" style="width:60px;height:60px;object-fit:contain;border:1px solid #eee;border-radius:8px;cursor:pointer" onclick="document.getElementById('mainImg').src=this.src" referrerpolicy="no-referrer">`).join('')}</div></div><div style="padding:20px"><div style="display:flex;justify-content:space-between"><span style="background:#f5f5f5;padding:4px 10px;border-radius:20px;font-size:11px">${data.sold_quantity||p.vendidos} vendidos • Real</span><button onclick="cerrarModal()" style="background:#eee;border:none;padding:6px 12px;border-radius:8px;cursor:pointer">✕</button></div><h2 style="margin:12px 0 6px;line-height:1.2;font-size:20px">${data.title}</h2><div style="margin:12px 0"><b style="font-size:30px">${data.currency_id} ${Number(data.price).toLocaleString()}</b></div><button onclick="addToCart(${tiendaActualProds.indexOf(p)});cerrarModal();" style="width:100%;background:#111;color:white;border:none;padding:14px;border-radius:12px;font-weight:700;cursor:pointer;margin-top:10px">🛒 Añadir al carrito</button></div></div>`;
+  modal.innerHTML=`<div style="background:white;border-radius:20px;max-width:1000px;width:100%;max-height:92vh;overflow:auto;display:grid;grid-template-columns:1fr 1fr"><div style="padding:16px;background:#fafafa"><img id="mainImg" src="${pics[0].url||pics[0].secure_url}" style="width:100%;height:400px;object-fit:contain;background:white;border-radius:12px" referrerpolicy="no-referrer"><div style="display:flex;gap:8px;margin-top:10px;overflow-x:auto">${pics.slice(0,8).map(pic=>`<img src="${pic.url||pic.secure_url}" style="width:60px;height:60px;object-fit:contain;border:1px solid #eee;border-radius:8px;cursor:pointer" onclick="document.getElementById('mainImg').src=this.src" referrerpolicy="no-referrer">`).join('')}</div></div><div style="padding:20px"><div style="display:flex;justify-content:space-between"><span style="background:#f5f5f5;padding:4px 10px;border-radius:20px;font-size:11px">${data.sold_quantity||p.vendidos} vendidos</span><button onclick="cerrarModal()" style="background:#eee;border:none;padding:6px 12px;border-radius:8px;cursor:pointer">✕</button></div><h2 style="margin:12px 0 6px;line-height:1.2;font-size:20px">${data.title}</h2><div style="margin:12px 0"><b style="font-size:30px">${data.currency_id} ${Number(data.price).toLocaleString()}</b></div><button onclick="addToCart(${tiendaActualProds.indexOf(p)});cerrarModal();" style="width:100%;background:#111;color:white;border:none;padding:14px;border-radius:12px;font-weight:700;cursor:pointer;margin-top:10px">🛒 Añadir al carrito</button></div></div>`;
 }
 function cerrarModal(){document.getElementById('prodModal').style.display='none';}
-function abrirCheckout(){ if(carrito.length===0){alert('Carrito vacío'); return;} alert('Carrito: '+carrito.length+' productos reales'); }
+function abrirCheckout(){ if(carrito.length===0){alert('Carrito vacío'); return;} alert('Carrito: '+carrito.length+' productos'); }
 function cerrarCheckout(){document.getElementById('checkoutModal').style.display='none';}
 </script>
 </body>
